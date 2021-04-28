@@ -1,61 +1,99 @@
-#! /usr/bin/env python
+#! /usr/bin/env python3
 
 import sys
 import os
 import copy
-
+import json
 from multirun import *
+
 import FWCore.ParameterSet.Config as cms
+import argparse
+
+def run_benchmark(options):
+
+    if options.logdir is not None:
+        with open(options.logdir + '/commandline_args.txt', 'w') as f:
+            json.dump(options.__dict__, f, indent=2)
+
+    configs = options.configs
+    del options.configs
+    run_io_benchmark = options.run_io_benchmark
+    del options.run_io_benchmark
+    info()
+    
+    # now that all options were already parsed, we need to remove these from sys.argv,
+    # otherwise we will get errors when parsing the process
+    # TODO: This seems kind of fishy. Is there a more elegant way to do this?
+    sys.argv = sys.argv[:2]
+    
+    for config in configs:
+        process = parseProcess(config)
+
+        if run_io_benchmark:
+            print('Benchmarking only I/O')
+            io = copy.deepcopy(process)
+            io.hltGetRaw = cms.EDAnalyzer("HLTGetRaw", RawDataCollection = cms.InputTag("rawDataCollector"))
+            io.path = cms.Path(io.hltGetRaw)
+            io.schedule = cms.Schedule(io.path)
+            if 'PrescaleService' in io.__dict__:
+                del io.PrescaleService
+            io_options = copy.deepcopy(options.__dict__)
+            io_options['logdir'] = None
+            io_options['keep'] = []
+            multiCmsRun(io, **io_options)
+            run_io_benchmark = False
+
+        print('Benchmarking %s' % config)
+        multiCmsRun(process, **options.__dict__) 
 
 
 if __name__ == "__main__":
-  if not 'CMSSW_BASE' in os.environ:
-    # FIXME print a meaningful error message
-    sys.exit(1)
+    if not 'CMSSW_BASE' in os.environ:
+        print("ERROR! Your CMSSW environment has not been set up correctly.\n"
+                    "Please refer to the following twiki: https://twiki.cern.ch/twiki/bin/view/CMSPublic/WorkBookSetComputerNode")
+        sys.exit(1)
 
-  if len(sys.argv) == 1:
-    # FIXME print a meaningful error message
-    sys.exit(1)
+    if len(sys.argv) == 1:
+        print("ERROR! No config has been provided! Please pass a valid python config as argument and retry!")
+        sys.exit(1)
 
-  # TODO parse arguments and options from the command line
-  options = {
-    'verbose'             : False,
-    'plumbing'            : False,
-    'warmup'              : True,
-    'events'              : 10100,
-    'repeats'             : 3,
-    'jobs'                : 2,
-    'threads'             : 10,                         # per job
-    'streams'             : 10,                         # per job
-    'gpus_per_job'        : 1,                          # per job
-    'allow_hyperthreading': True,                       # this has no effect if set_cpu_affinity is False
-    'set_cpu_affinity'    : True,
-    'set_gpu_affinity'    : True,
-    'logdir'              : 'logs',                     # relative or absolute path, or None to disable storing the logs
-    'keep'                : [ 'resources.json' ],       # additional output files to be kept, along with the logs
-  }
+    parser = argparse.ArgumentParser(description='Process some integers.')
+    parser.add_argument('configs', nargs='+', type=str,
+                                            help='Config python file(s) to run the validation on.')
+    parser.add_argument('--verbose', action='store_true',
+                                            help='Controls the verbosity of the program.')
+    parser.add_argument('--plumbing', action='store_true',
+                                            help='Unknown')
+    parser.add_argument('--warmup', action='store_true',
+                                            help='Conduct warmup job before doing the actual timing study.')
+    parser.add_argument('--events', type=int, default=10100,
+                                            help='Maximum number of events to run on.')
+    parser.add_argument('--repeats', type=int, default=1,
+                                            help='Set how often each job should be repeated.')
+    parser.add_argument('--jobs', type=int, default=1,
+                                            help='Number of jobs.')
+    parser.add_argument('--threads', type=int, default=1,
+                                            help='Number of threads per job.')
+    parser.add_argument('--streams', type=int, default=4,
+                                            help='Number of EDM streams per job.')
+    parser.add_argument('--gpus-per-job', dest='gpus_per_job', type=int, default=1,
+                                            help='Number of GPUs per job.')
+    parser.add_argument('--allow-hyperthreading', dest='allow_hyperthreading', action='store_true',
+                                            help='Allow hyperthreading. Has no effect if set-cpu-affinity option is not set.')
+    parser.add_argument('--set-cpu-affinity', dest='set_cpu_affinity', action='store_true',
+                                            help='Set CPU affinity to True.')
+    parser.add_argument('--set-gpu-affinity', dest='set_gpu_affinity', action='store_true',
+                                            help='Set GPU affinity to True.')
+    parser.add_argument('--run-io-benchmark', dest='run_io_benchmark', action='store_true',
+                                            help='Benchmark only I/O before doing the full measurement.')                                        
+    parser.add_argument('--logdir', type=str, default=".",
+                                            help='Relative or absolute path where logfile should be saved. Default value is current directory.')
+    parser.add_argument('--keep', nargs='+', default= ['resources.json'],
+                                            help='Additional output files to be kept, along with the logs.')
+    
+    
+    options = parser.parse_args()
 
-  run_io_benchmark = True
-
-  info()
-
-  for config in sys.argv[1:]:
-    process = parseProcess(config)
-
-    if run_io_benchmark:
-      print 'Benchmarking only I/O'
-      io = copy.deepcopy(process)
-      io.hltGetRaw = cms.EDAnalyzer("HLTGetRaw", RawDataCollection = cms.InputTag("rawDataCollector"))
-      io.path = cms.Path(io.hltGetRaw)
-      io.schedule = cms.Schedule(io.path)
-      if 'PrescaleService' in io.__dict__:
-        del io.PrescaleService
-      io_options = copy.deepcopy(options)
-      io_options['logdir'] = None
-      io_options['keep'] = []
-      multiCmsRun(io, **io_options)
-      run_io_benchmark = False
-      print
-
-    print 'Benchmarking %s' % config
-    multiCmsRun(process, **options)
+    run_benchmark(options)
+    
+    print("Done!")
